@@ -564,25 +564,33 @@ function runCalibReal(){
     const mean=sum/n,sd=Math.sqrt(Math.max(0,sum2/n-mean*mean));
     const light=Math.max(0,Math.min(1,(mean-25)/50));     // dark room → 0
     const detail=Math.max(0,Math.min(1,sd/28));           // blank wall → low
-    // board signature: interleaved red+green ring pixels with coincident centroids
+    // board signature: red+green pixels with coincident centroids AND ring
+    // structure — on a real board they sit in exactly three radial bands
+    // (bull, treble, double). Wood grain and camera noise scatter everywhere,
+    // so require most ring pixels to fall inside those bands.
     const fr=red/n,fg=grn/n;
-    let board=0;
-    if(fr>0.004&&fg>0.004&&fr<0.35&&fg<0.35){
-      const dx=rx/red-gx/grn,dy=ry/red-gy/grn;
-      const prox=Math.max(0,1-Math.hypot(dx,dy)/(W*0.35));
-      board=(0.5+0.5*prox)*Math.min(1,(fr+fg)/0.03);
+    let board=0,geo=null;
+    if(fr>0.004&&fg>0.004&&fr<0.35&&fg<0.35&&Math.min(red,grn)/Math.max(red,grn)>0.35){
+      const bx=(rx+gx)/(red+grn),by=(ry+gy)/(red+grn);
+      const radii=ringPx.map(p=>Math.hypot(p%W-bx,((p/W)|0)-by)).sort((a,c)=>a-c);
+      const rp=radii[Math.floor(radii.length*0.95)];
+      if(rp>8){
+        let inBand=0;
+        for(const rr of radii){
+          const q=rr/rp;
+          if(q<0.12||(q>0.52&&q<0.72)||(q>0.86&&q<1.04))inBand++;
+        }
+        const structure=inBand/radii.length;     // real board ≈ 0.9, scatter ≈ 0.3
+        const dx=rx/red-gx/grn,dy=ry/red-gy/grn;
+        const prox=Math.max(0,1-Math.hypot(dx,dy)/(W*0.35));
+        board=(0.5+0.5*prox)*Math.min(1,(fr+fg)/0.03)*Math.max(0,Math.min(1,(structure-0.55)/0.25));
+        if(board>0.3)geo={cxn:bx/W,cyn:by/W,rn:rp/W};
+      }
     }
     calConf+=(100*(0.3*light+0.2*detail+0.5*board)-calConf)*0.35;
     const pc=Math.round(calConf);
     const locked=board>0.3&&pc>=70;
-    if(locked){
-      // board geometry: center = ring centroid; the 95th-percentile ring-pixel
-      // radius sits in the double band (~168 mm from center on a real board)
-      const bx=(rx+gx)/(red+grn),by=(ry+gy)/(red+grn);
-      const radii=ringPx.map(p=>Math.hypot(p%W-bx,((p/W)|0)-by)).sort((a,c)=>a-c);
-      const rp=radii[Math.floor(radii.length*0.95)];
-      if(rp>6)boardCal={cxn:bx/W,cyn:by/W,rn:rp/W};   // normalized by width (x/y same scale)
-    }
+    if(locked&&geo)boardCal=geo;   // normalized by width (x/y same scale)
     const lightText=mean<35?"Too dark ✕":mean<60?"Dim — add light":"Good ✓";
     setCalibUI(pc,locked,lightText);
     $("startmatch").disabled=pc<70;
