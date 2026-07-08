@@ -67,6 +67,17 @@
   .agr{border-radius:10px;padding:11px;text-align:center;font-family:var(--cond);font-weight:700;letter-spacing:.08em;
     text-transform:uppercase;font-size:12px;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--dim)}
   .agr.done{background:rgba(34,197,90,.14);border-color:var(--green);color:var(--green)}
+  .fcrow{display:flex;gap:6px;margin-top:4px}
+  .fc{width:34px;height:34px;border-radius:50%;border:2px solid var(--line);cursor:pointer;flex:none}
+  .fc.on{border-color:#fff;box-shadow:0 0 0 2px var(--gold)}
+  #camline{display:none;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;padding:6px 10px;margin-bottom:8px}
+  #camline video{width:72px;height:54px;border-radius:8px;object-fit:cover;background:#000;flex:none}
+  #camline .cs{font-family:var(--cond);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--cyan)}
+  #camline .cs small{display:block;font-size:10px;color:var(--dim);letter-spacing:.04em;text-transform:none;margin-top:2px}
+  #rvimg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;z-index:1}
+  #rvmark{position:absolute;width:20px;height:20px;border:3px solid var(--red);border-radius:50%;
+    transform:translate(-50%,-50%);box-shadow:0 0 14px var(--red);display:none;z-index:3;pointer-events:none}
 
   /* calibration */
   .vf{position:relative;border-radius:14px;overflow:hidden;background:#0f1720;height:280px;border:1px solid var(--line)}
@@ -180,6 +191,12 @@
       <div><label class="lbl" for="p1n">Player 1</label><input type="text" id="p1n" value="Kip" maxlength="12"></div>
       <div><label class="lbl" for="p2n">Player 2</label><input type="text" id="p2n" value="Jordan" maxlength="12"></div>
     </div>
+    <div class="kicker" style="margin-top:12px">Flight colors — how the camera tells your darts apart</div>
+    <div class="row2">
+      <div><span class="lbl">Player 1 darts</span><div class="fcrow" id="fc0"></div></div>
+      <div><span class="lbl">Player 2 darts</span><div class="fcrow" id="fc1"></div></div>
+    </div>
+    <p style="font-size:11px;color:var(--dim);margin-top:6px">Pick the color of your dart flights. Avoid red, green, black, and white — the board already owns those.</p>
 
     <div class="kicker" style="margin-top:16px">Format</div>
     <div class="row2">
@@ -225,7 +242,7 @@
   <!-- CALIBRATION -->
   <section class="scr" id="scr-calib">
     <div class="kicker">Board lock</div>
-    <div class="vf">
+    <div class="vf" id="vfbox">
       <video id="cam" autoplay playsinline muted></video>
       <div class="brkt tl"></div><div class="brkt tr"></div><div class="brkt bl"></div><div class="brkt br"></div>
       <div class="locktag" id="locktag">● Locking board…</div>
@@ -250,7 +267,7 @@
     <div class="scorebug">
       <span class="livebadge"><i></i>LIVE</span>
       <span id="bugmid">501 · LEG 1</span>
-      <span class="chip cyan">SIM CAM</span>
+      <span class="chip cyan" id="camchip">SIM</span>
     </div>
     <div class="board2">
       <div class="pcell" id="pc0"><div class="nm"></div><div class="sc">501</div><div class="st"></div><div class="legs"></div></div>
@@ -261,7 +278,8 @@
       <svg id="board" viewBox="-250 -250 500 500" role="img" aria-label="Interactive dartboard — tap where the dart lands"></svg>
       <div class="banner" id="banner" style="display:none"><span></span></div>
     </div>
-    <p class="simnote">TAP THE BOARD WHERE THE DART LANDS · AI MAKES THE CALL</p>
+    <div id="camline"><div class="cs" id="camstatus">CAM REF<small>starting…</small></div></div>
+    <p class="simnote" id="boardnote">TAP THE BOARD WHERE THE DART LANDS · AI MAKES THE CALL</p>
     <div id="feed"></div>
     <div class="hint" id="hint" style="display:none"></div>
     <div class="liveacts">
@@ -281,6 +299,8 @@
       <span class="frztag">Frozen frame</span>
       <span class="camtag" id="zcamtag">Cam 1 · 4×</span>
       <svg id="zoom" viewBox="-250 -250 500 500"></svg>
+      <img id="rvimg" alt="Frozen camera frame of the contested dart">
+      <div id="rvmark"></div>
     </div>
     <div class="angletabs">
       <button class="at on" id="cam1tab">Cam 1 · Front</button>
@@ -411,9 +431,29 @@ function detect(x,y){
 
 /* ══════════════════ STATE ══════════════════ */
 const $=id=>document.getElementById(id);
-let cfg={mode:"501",start:501,doubleOut:true,bestOf:3,
+/* flight colors the camera can key on — none of these exist on the board */
+const FLIGHT={
+  yellow:{name:"Yellow",css:"#ffd60a",match:(r,g,b)=>r>150&&g>130&&b<110&&r-b>70},
+  pink:  {name:"Pink",  css:"#ff4fd8",match:(r,g,b)=>r>140&&b>100&&g<r*0.65},
+  blue:  {name:"Blue",  css:"#2e8bff",match:(r,g,b)=>b>110&&b>r*1.3&&b>g*1.15},
+  orange:{name:"Orange",css:"#ff8c1a",match:(r,g,b)=>r>160&&g>50&&g<140&&b<90&&r>g*1.5},
+};
+let cfg={mode:"501",start:501,doubleOut:true,bestOf:3,colors:["yellow","blue"],
   house:{target:350,bullX2:true,sevenSkip:true,bustReset:300},names:["Kip","Jordan"]};
 let match=null,history=[],busy=false,turnTimer=null,review=null;
+
+/* flight color pickers */
+[0,1].forEach(pi=>{
+  const row=$("fc"+pi);
+  Object.keys(FLIGHT).forEach(key=>{
+    const b=document.createElement("button");
+    b.type="button";b.className="fc"+(cfg.colors[pi]===key?" on":"");
+    b.style.background=FLIGHT[key].css;
+    b.setAttribute("aria-label",FLIGHT[key].name);b.title=FLIGHT[key].name;
+    b.onclick=()=>{cfg.colors[pi]=key;[...row.children].forEach(x=>x.classList.remove("on"));b.classList.add("on");};
+    row.appendChild(b);
+  });
+});
 
 function newMatch(){
   match={cur:0,leg:1,over:false,winner:null,lastHit:null,visitDarts:[],visitPoints:0,
@@ -463,6 +503,8 @@ $("tosetup2").onclick=()=>{
 /* ── calibration — real frame analysis on the live camera ── */
 let calStream=null,calTimer=null,calConf=0;
 function startCalib(){
+  $("vfbox").prepend($("cam"));   // reclaim the video if a match borrowed it
+  $("cam").play().catch(()=>{});
   if(calStream&&calStream.active){runCalibReal();return;}
   if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
     navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}})
@@ -495,6 +537,7 @@ function setCalibUI(pc,locked,lightText){
   $("calpc").textContent=pc+"%";
   $("calpc").style.color=pc>=70?"var(--green)":"var(--amber)";
 }
+let boardCal=null;   // {cxn,cyn,rn} — board center + double-ring radius, normalized to frame width
 function runCalibReal(){
   clearInterval(calTimer);
   const v=$("cam"),W=96,H=72;
@@ -505,12 +548,13 @@ function runCalibReal(){
     cx2.drawImage(v,0,0,W,H);
     const d=cx2.getImageData(0,0,W,H).data,n=W*H;
     let sum=0,sum2=0,red=0,grn=0,rx=0,ry=0,gx=0,gy=0;
+    const ringPx=[];
     for(let i=0,px=0;i<d.length;i+=4,px++){
       const r=d[i],g=d[i+1],b=d[i+2];
       const l=0.299*r+0.587*g+0.114*b;
       sum+=l;sum2+=l*l;
-      if(r>85&&r>1.45*g&&r>1.45*b){red++;rx+=px%W;ry+=(px/W)|0;}
-      else if(g>65&&g>1.25*r&&g>1.15*b){grn++;gx+=px%W;gy+=(px/W)|0;}
+      if(r>85&&r>1.45*g&&r>1.45*b){red++;rx+=px%W;ry+=(px/W)|0;ringPx.push(px);}
+      else if(g>65&&g>1.25*r&&g>1.15*b){grn++;gx+=px%W;gy+=(px/W)|0;ringPx.push(px);}
     }
     const mean=sum/n,sd=Math.sqrt(Math.max(0,sum2/n-mean*mean));
     const light=Math.max(0,Math.min(1,(mean-25)/50));     // dark room → 0
@@ -525,8 +569,17 @@ function runCalibReal(){
     }
     calConf+=(100*(0.3*light+0.2*detail+0.5*board)-calConf)*0.35;
     const pc=Math.round(calConf);
+    const locked=board>0.3&&pc>=70;
+    if(locked){
+      // board geometry: center = ring centroid; the 95th-percentile ring-pixel
+      // radius sits in the double band (~168 mm from center on a real board)
+      const bx=(rx+gx)/(red+grn),by=(ry+gy)/(red+grn);
+      const radii=ringPx.map(p=>Math.hypot(p%W-bx,((p/W)|0)-by)).sort((a,c)=>a-c);
+      const rp=radii[Math.floor(radii.length*0.95)];
+      if(rp>6)boardCal={cxn:bx/W,cyn:by/W,rn:rp/W};   // normalized by width (x/y same scale)
+    }
     const lightText=mean<35?"Too dark ✕":mean<60?"Dim — add light":"Good ✓";
-    setCalibUI(pc,board>0.3&&pc>=70,lightText);
+    setCalibUI(pc,locked,lightText);
     $("startmatch").disabled=pc<70;
   },500);
 }
@@ -535,12 +588,106 @@ function stopCalib(){
   if(calStream){calStream.getTracks().forEach(t=>t.stop());calStream=null;}
 }
 $("skipcal").onclick=()=>{
-  stopCalib();
+  stopCalib();boardCal=null;
   $("calpc").textContent="override";
   $("ck-fit").textContent="Overridden";$("ck-fit").className="warn";
   $("startmatch").disabled=false;
 };
-$("startmatch").onclick=()=>{stopCalib();newMatch();show("live");renderLive();};
+$("startmatch").onclick=()=>{
+  clearInterval(calTimer);calTimer=null;
+  newMatch();show("live");
+  if(boardCal&&calStream&&calStream.active)startCamScoring();
+  else stopCalib();
+  renderLive();
+};
+
+/* ── live camera scoring — the ref watches the board all game ──
+   Pipeline: motion-gate → settle → diff vs reference frame → blob of the
+   current thrower's flight color inside the board circle → board mm via
+   calibration → same confidence/scoring engine as manual taps. */
+const cam={on:false,timer:null,W:320,H:240,ctx:null,prev:null,ref:null,settle:0,
+  settledFor:0,state:"REBASE",blob:null,stable:0,snapCv:null,snapCtx:null};
+function camStatus(t){$("camstatus").innerHTML="CAM REF<small>"+t+"</small>";}
+function startCamScoring(){
+  if(cam.on)return;
+  cam.on=true;cam.state="REBASE";cam.ref=null;cam.prev=null;cam.settle=0;cam.stable=0;
+  if(!cam.ctx){
+    const cv=document.createElement("canvas");cv.width=cam.W;cv.height=cam.H;
+    cam.ctx=cv.getContext("2d",{willReadFrequently:true});
+    cam.snapCv=document.createElement("canvas");cam.snapCv.width=480;cam.snapCv.height=360;
+    cam.snapCtx=cam.snapCv.getContext("2d");
+  }
+  $("camline").style.display="flex";
+  $("camline").insertBefore($("cam"),$("camline").firstChild);
+  $("cam").play().catch(()=>{});   // moving a media element in the DOM pauses it
+  camStatus("locking on…");
+  cam.timer=setInterval(camTick,320);
+}
+function stopCamScoring(){
+  if(!cam.on)return;
+  clearInterval(cam.timer);cam.timer=null;cam.on=false;
+  $("camline").style.display="none";
+}
+function motionLevel(a,b){
+  let s=0,k=0;
+  for(let i=0;i<a.length;i+=32){s+=Math.abs(a[i]-b[i]);k++;}
+  return s/k;
+}
+function camTick(){
+  const v=$("cam");
+  if(v.paused)v.play().catch(()=>{});
+  if(v.readyState<2||!boardCal)return;
+  cam.ctx.drawImage(v,0,0,cam.W,cam.H);
+  const cur=cam.ctx.getImageData(0,0,cam.W,cam.H);
+  if(cam.prev){
+    if(motionLevel(cur.data,cam.prev.data)>6){cam.settle=0;camStatus("motion — waiting for board to settle");}
+    else cam.settle++;
+  }
+  cam.prev=cur;
+  if(cam.settle<2)return;
+  if(cam.state==="REBASE"){cam.ref=cur;cam.state="WATCH";cam.settledFor=0;return;}
+  cam.settledFor++;
+  if(cam.settledFor>15){cam.ref=cur;cam.settledFor=0;}  // rolling rebase: absorbs pulled darts + light drift
+  if(!match||match.over||busy||review){camStatus("paused");return;}
+  const col=FLIGHT[cfg.colors[match.cur]];
+  camStatus("watching for "+match.players[match.cur].name+"’s "+col.name.toLowerCase()+" darts");
+  const cx=boardCal.cxn*cam.W,cy=boardCal.cyn*cam.W,rpx=boardCal.rn*cam.W;
+  const d=cur.data,rd=cam.ref.data;
+  let n=0,sx=0,sy=0;
+  for(let y=0;y<cam.H;y++)for(let x=0;x<cam.W;x++){
+    if(Math.hypot(x-cx,y-cy)>rpx*1.25)continue;
+    const i=(y*cam.W+x)*4;
+    if(!col.match(d[i],d[i+1],d[i+2]))continue;
+    if(Math.abs(d[i]-rd[i])+Math.abs(d[i+1]-rd[i+1])+Math.abs(d[i+2]-rd[i+2])<60)continue;
+    n++;sx+=x;sy+=y;
+  }
+  if(n<5){cam.blob=null;cam.stable=0;return;}
+  let bx=sx/n,by=sy/n;
+  // refine: drop outliers far from the blob center
+  let n2=0;sx=0;sy=0;
+  for(let y=Math.max(0,by-16|0);y<Math.min(cam.H,by+16|0);y++)
+    for(let x=Math.max(0,bx-16|0);x<Math.min(cam.W,bx+16|0);x++){
+      const i=(y*cam.W+x)*4;
+      if(!col.match(d[i],d[i+1],d[i+2]))continue;
+      if(Math.abs(d[i]-rd[i])+Math.abs(d[i+1]-rd[i+1])+Math.abs(d[i+2]-rd[i+2])<60)continue;
+      n2++;sx+=x;sy+=y;
+    }
+  if(n2<4||n2>600){cam.blob=null;cam.stable=0;return;}
+  bx=sx/n2;by=sy/n2;
+  if(cam.blob&&Math.hypot(bx-cam.blob.x,by-cam.blob.y)<8)cam.stable++;else cam.stable=1;
+  cam.blob={x:bx,y:by};
+  if(cam.stable<2)return;                    // must hold still for 2 frames
+  cam.stable=0;cam.blob=null;
+  const mmPerPx=168/rpx;
+  const hit=detect((bx-cx)*mmPerPx,(by-cy)*mmPerPx);
+  hit.cam=true;
+  cam.snapCtx.drawImage(v,0,0,480,360);
+  hit.snap=cam.snapCv.toDataURL("image/jpeg",0.7);
+  hit.snapX=bx/cam.W;hit.snapY=by/cam.H;
+  cam.ref=cur;                               // fold the new dart into the reference
+  if(hit.conf<0.75&&hit.alt)openReview(hit,true);
+  else applyDart(hit);
+}
 
 /* ── live ── */
 const boardG=renderBoard($("board"));
@@ -624,6 +771,7 @@ function endTurn(){
   const p=match.players[match.cur];
   if(cfg.mode!=="house"&&match.visitPoints>p.highVisit)p.highVisit=match.visitPoints;
   match.visitDarts=[];match.visitPoints=0;
+  if(cam.on){cam.state="REBASE";cam.settle=0;}   // fresh reference once darts are pulled
   let n=(match.cur+1)%2;
   if(match.players[n].skipNext){
     match.players[n].skipNext=false;
@@ -648,6 +796,7 @@ function legWin(){
 function matchWin(){
   match.over=true;match.winner=match.cur;
   clearTimeout(turnTimer);busy=false;
+  stopCamScoring();
   renderWinner();show("winner");
 }
 /* checkout solver */
@@ -713,6 +862,10 @@ function renderLive(){
   }else hint.style.display="none";
   $("challenge").disabled=!match.lastHit||!history.length||busy&&false||match.over;
   $("undo").disabled=!history.length||match.over;
+  $("camchip").textContent=cam.on?"CAM REF ●":"SIM";
+  $("boardnote").textContent=cam.on
+    ?"CAM REF IS WATCHING THE REAL BOARD · TAP HERE ONLY TO CORRECT A MISSED DART"
+    :"TAP THE BOARD WHERE THE DART LANDS · AI MAKES THE CALL";
   $("tickertext").innerHTML=
     `<b>AI REF ACTIVE</b> • SIM VISION • DISPUTES: ${match.disputes.length} • `+
     (cfg.mode==="house"
@@ -740,6 +893,8 @@ function openReview(hit,auto){
   show("review");
   $("rvhead").textContent=auto?"■ Auto-freeze — low confidence":"■ Challenge — last dart";
   $("zoom").innerHTML="";zoomG=renderBoard($("zoom"));
+  $("cam1tab").textContent=hit.snap?"Live frame":"Cam 1 · Front";
+  $("cam2tab").textContent=hit.snap?"Board map":"Cam 2 · 45°";
   setCam(1);
   const mk=document.createElementNS(NS,"g");
   mk.innerHTML=`<circle cx="0" cy="0" r="9" fill="none" stroke="var(--red)" stroke-width="2.5"/>
@@ -780,8 +935,19 @@ function openReview(hit,auto){
 }
 function setCam(n){
   $("cam1tab").classList.toggle("on",n===1);$("cam2tab").classList.toggle("on",n===2);
-  $("zcamtag").textContent=`Cam ${n} · 4×`;
   const h=review.hit;
+  if(h.snap&&n===1){
+    // Cam 1 = the real frozen camera frame, zoomed on the impact point
+    $("zcamtag").textContent="Live frame · 2.4×";
+    const img=$("rvimg"),mk=$("rvmark");
+    img.src=h.snap;img.style.display="block";
+    img.style.transformOrigin=(h.snapX*100)+"% "+(h.snapY*100)+"%";
+    img.style.transform="scale(2.4)";
+    mk.style.display="block";mk.style.left=(h.snapX*100)+"%";mk.style.top=(h.snapY*100)+"%";
+    return;
+  }
+  $("rvimg").style.display="none";$("rvmark").style.display="none";
+  $("zcamtag").textContent=h.snap?"Board map · 4×":`Cam ${n} · 4×`;
   zoomG.setAttribute("transform",
     n===1?`scale(4) translate(${-h.x} ${-h.y})`
          :`rotate(12) scale(4) translate(${-h.x} ${-h.y})`);
@@ -816,8 +982,14 @@ function renderWinner(){
     ?match.disputes.map(d=>`<div class="dlog"><span class="tag ${d.tag}">${d.tag==="up"?"AI upheld":d.tag==="ov"?"Override":"Vote"}</span><span>${d.text}</span></div>`).join("")
     :`<div class="dlog"><span class="tag up">Clean</span><span>No disputes — every AI call stood. The camera never blinked.</span></div>`;
 }
-$("rematch").onclick=()=>{newMatch();show("live");renderLive();};
-$("newmatch").onclick=()=>{agreed=[false,false];
+$("rematch").onclick=()=>{
+  newMatch();show("live");
+  if(boardCal&&calStream&&calStream.active)startCamScoring();
+  renderLive();
+};
+$("newmatch").onclick=()=>{
+  stopCamScoring();stopCalib();
+  agreed=[false,false];
   $("agr1").className="agr";$("agr1").textContent="P1 — tap to agree";
   $("agr2").className="agr";$("agr2").textContent="P2 — tap to agree";
   show("setup");};
