@@ -67,8 +67,8 @@
   .agr{border-radius:10px;padding:11px;text-align:center;font-family:var(--cond);font-weight:700;letter-spacing:.08em;
     text-transform:uppercase;font-size:12px;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--dim)}
   .agr.done{background:rgba(34,197,90,.14);border-color:var(--green);color:var(--green)}
-  .fcrow{display:flex;gap:6px;margin-top:4px}
-  .fc{width:34px;height:34px;border-radius:50%;border:2px solid var(--line);cursor:pointer;flex:none}
+  .fcrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+  .fc{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);cursor:pointer;flex:none}
   .fc.on{border-color:#fff;box-shadow:0 0 0 2px var(--gold)}
   #camline{display:none;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);
     border-radius:10px;padding:6px 10px;margin-bottom:8px}
@@ -196,7 +196,7 @@
       <div><span class="lbl">Player 1 darts</span><div class="fcrow" id="fc0"></div></div>
       <div><span class="lbl">Player 2 darts</span><div class="fcrow" id="fc1"></div></div>
     </div>
-    <p style="font-size:11px;color:var(--dim);margin-top:6px">Pick the color of your dart flights. Avoid red, green, black, and white — the board already owns those.</p>
+    <p style="font-size:11px;color:var(--dim);margin-top:6px">Pick the color of your dart flights. Yellow and red both work — avoid green, white, and black, they blend into the board.</p>
 
     <div class="kicker" style="margin-top:16px">Format</div>
     <div class="row2">
@@ -431,14 +431,17 @@ function detect(x,y){
 
 /* ══════════════════ STATE ══════════════════ */
 const $=id=>document.getElementById(id);
-/* flight colors the camera can key on — none of these exist on the board */
+/* flight colors the camera can key on. Red is fine: detection only looks at
+   pixels that CHANGED vs the reference frame, and the board's own red never
+   changes. Avoid green/white/black — too close to the board itself. */
 const FLIGHT={
   yellow:{name:"Yellow",css:"#ffd60a",match:(r,g,b)=>r>150&&g>130&&b<110&&r-b>70},
+  red:   {name:"Red",   css:"#e03131",match:(r,g,b)=>r>110&&r>1.5*g&&r>1.5*b},
   pink:  {name:"Pink",  css:"#ff4fd8",match:(r,g,b)=>r>140&&b>100&&g<r*0.65},
   blue:  {name:"Blue",  css:"#2e8bff",match:(r,g,b)=>b>110&&b>r*1.3&&b>g*1.15},
   orange:{name:"Orange",css:"#ff8c1a",match:(r,g,b)=>r>160&&g>50&&g<140&&b<90&&r>g*1.5},
 };
-let cfg={mode:"501",start:501,doubleOut:true,bestOf:3,colors:["yellow","blue"],
+let cfg={mode:"501",start:501,doubleOut:true,bestOf:3,colors:["yellow","red"],
   house:{target:350,bullX2:true,sevenSkip:true,bustReset:300},names:["Kip","Jordan"]};
 let match=null,history=[],busy=false,turnTimer=null,review=null;
 
@@ -650,40 +653,64 @@ function camTick(){
   if(cam.settledFor>15){cam.ref=cur;cam.settledFor=0;}  // rolling rebase: absorbs pulled darts + light drift
   if(!match||match.over||busy||review){camStatus("paused");return;}
   const col=FLIGHT[cfg.colors[match.cur]];
-  camStatus("watching for "+match.players[match.cur].name+"’s "+col.name.toLowerCase()+" darts");
+  camStatus("watching for "+match.players[match.cur].name+"’s "+col.name.toLowerCase()+" darts · tip tracking");
   const cx=boardCal.cxn*cam.W,cy=boardCal.cyn*cam.W,rpx=boardCal.rn*cam.W;
   const d=cur.data,rd=cam.ref.data;
-  let n=0,sx=0,sy=0;
+  // pass 1: the whole dart — every pixel that changed vs the reference
+  // (shaft, barrel, and flight all count, whatever their color)
+  let dn=0,dsx=0,dsy=0;
+  const pts=[];
   for(let y=0;y<cam.H;y++)for(let x=0;x<cam.W;x++){
-    if(Math.hypot(x-cx,y-cy)>rpx*1.25)continue;
+    if(Math.hypot(x-cx,y-cy)>rpx*1.3)continue;
     const i=(y*cam.W+x)*4;
-    if(!col.match(d[i],d[i+1],d[i+2]))continue;
-    if(Math.abs(d[i]-rd[i])+Math.abs(d[i+1]-rd[i+1])+Math.abs(d[i+2]-rd[i+2])<60)continue;
-    n++;sx+=x;sy+=y;
+    if(Math.abs(d[i]-rd[i])+Math.abs(d[i+1]-rd[i+1])+Math.abs(d[i+2]-rd[i+2])<70)continue;
+    pts.push(x,y);dn++;dsx+=x;dsy+=y;
   }
-  if(n<5){cam.blob=null;cam.stable=0;return;}
-  let bx=sx/n,by=sy/n;
-  // refine: drop outliers far from the blob center
-  let n2=0;sx=0;sy=0;
-  for(let y=Math.max(0,by-16|0);y<Math.min(cam.H,by+16|0);y++)
-    for(let x=Math.max(0,bx-16|0);x<Math.min(cam.W,bx+16|0);x++){
-      const i=(y*cam.W+x)*4;
-      if(!col.match(d[i],d[i+1],d[i+2]))continue;
-      if(Math.abs(d[i]-rd[i])+Math.abs(d[i+1]-rd[i+1])+Math.abs(d[i+2]-rd[i+2])<60)continue;
-      n2++;sx+=x;sy+=y;
-    }
-  if(n2<4||n2>600){cam.blob=null;cam.stable=0;return;}
+  if(dn<8||dn>2500){cam.blob=null;cam.stable=0;return;}   // nothing, or a scene change
+  let bx=dsx/dn,by=dsy/dn;
+  // keep the coherent blob, drop stray noise pixels
+  const kept=[];let n2=0,sx=0,sy=0;
+  for(let k=0;k<pts.length;k+=2){
+    const x=pts[k],y=pts[k+1];
+    if(Math.hypot(x-bx,y-by)>70)continue;
+    kept.push(x,y);n2++;sx+=x;sy+=y;
+  }
+  if(n2<8){cam.blob=null;cam.stable=0;return;}
   bx=sx/n2;by=sy/n2;
-  if(cam.blob&&Math.hypot(bx-cam.blob.x,by-cam.blob.y)<8)cam.stable++;else cam.stable=1;
-  cam.blob={x:bx,y:by};
-  if(cam.stable<2)return;                    // must hold still for 2 frames
+  // pass 2: the flight — colored changed pixels — tells us whose dart it is
+  // and which end is the BACK of the dart
+  let fn=0,fx=0,fy=0;
+  for(let k=0;k<kept.length;k+=2){
+    const x=kept[k],y=kept[k+1],i=(y*cam.W+x)*4;
+    if(col.match(d[i],d[i+1],d[i+2])){fn++;fx+=x;fy+=y;}
+  }
+  const oriented=fn>=3;
+  let tipX=bx,tipY=by;
+  if(oriented){
+    fx/=fn;fy/=fn;
+    // tip = far end of the changed blob from the flight (mean of 3 farthest),
+    // nudged 1.5px further along the shaft — averaging pulls the estimate
+    // back up the shaft, and the barrel slightly occludes the entry point
+    const far=[];
+    for(let k=0;k<kept.length;k+=2)far.push([Math.hypot(kept[k]-fx,kept[k+1]-fy),kept[k],kept[k+1]]);
+    far.sort((a,c)=>c[0]-a[0]);
+    const top=far.slice(0,3);
+    tipX=top.reduce((s2,p)=>s2+p[1],0)/top.length;
+    tipY=top.reduce((s2,p)=>s2+p[2],0)/top.length;
+    const ux=tipX-fx,uy=tipY-fy,ul=Math.hypot(ux,uy)||1;
+    tipX+=ux/ul*1.5;tipY+=uy/ul*1.5;
+  }
+  if(cam.blob&&Math.hypot(tipX-cam.blob.x,tipY-cam.blob.y)<8)cam.stable++;else cam.stable=1;
+  cam.blob={x:tipX,y:tipY};
+  if(cam.stable<2)return;                    // tip must hold still for 2 frames
   cam.stable=0;cam.blob=null;
   const mmPerPx=168/rpx;
-  const hit=detect((bx-cx)*mmPerPx,(by-cy)*mmPerPx);
+  const hit=detect((tipX-cx)*mmPerPx,(tipY-cy)*mmPerPx);
   hit.cam=true;
+  if(!oriented)hit.conf=Math.min(hit.conf,0.72);   // no flight seen → tip is a guess → force review
   cam.snapCtx.drawImage(v,0,0,480,360);
   hit.snap=cam.snapCv.toDataURL("image/jpeg",0.7);
-  hit.snapX=bx/cam.W;hit.snapY=by/cam.H;
+  hit.snapX=tipX/cam.W;hit.snapY=tipY/cam.H;
   cam.ref=cur;                               // fold the new dart into the reference
   if(hit.conf<0.75&&hit.alt)openReview(hit,true);
   else applyDart(hit);
