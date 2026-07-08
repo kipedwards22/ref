@@ -435,8 +435,10 @@ const $=id=>document.getElementById(id);
    pixels that CHANGED vs the reference frame, and the board's own red never
    changes. Avoid green/white/black — too close to the board itself. */
 const FLIGHT={
-  yellow:{name:"Yellow",css:"#ffd60a",match:(r,g,b)=>r>150&&g>130&&b<110&&r-b>70},
-  red:   {name:"Red",   css:"#e03131",match:(r,g,b)=>r>110&&r>1.5*g&&r>1.5*b},
+  /* tuned for real flights that are often mostly black with colored streaks —
+     matchers are loose because diff-gating means the static board never fires */
+  yellow:{name:"Yellow",css:"#ffd60a",match:(r,g,b)=>r>150&&g>130&&b<150&&r-b>60&&g-b>45},
+  red:   {name:"Red",   css:"#e03131",match:(r,g,b)=>r>120&&r-g>50&&r-b>50},   // includes pinkish red
   pink:  {name:"Pink",  css:"#ff4fd8",match:(r,g,b)=>r>140&&b>100&&g<r*0.65},
   blue:  {name:"Blue",  css:"#2e8bff",match:(r,g,b)=>b>110&&b>r*1.3&&b>g*1.15},
   orange:{name:"Orange",css:"#ff8c1a",match:(r,g,b)=>r>160&&g>50&&g<140&&b<90&&r>g*1.5},
@@ -685,7 +687,7 @@ function camTick(){
     if(col.match(d[i],d[i+1],d[i+2])){fn++;fx+=x;fy+=y;}
   }
   const oriented=fn>=3;
-  let tipX=bx,tipY=by;
+  let tipX=bx,tipY=by,capConf=null;
   if(oriented){
     fx/=fn;fy/=fn;
     // tip = far end of the changed blob from the flight (mean of 3 farthest),
@@ -699,6 +701,42 @@ function camTick(){
     tipY=top.reduce((s2,p)=>s2+p[2],0)/top.length;
     const ux=tipX-fx,uy=tipY-fy,ul=Math.hypot(ux,uy)||1;
     tipX+=ux/ul*1.5;tipY+=uy/ul*1.5;
+  }else{
+    // no flight color visible (mostly-black flights) — orient geometrically:
+    // the flight end of a dart is wide, the tip end is thin
+    let sxx=0,syy=0,sxy=0;
+    for(let k=0;k<kept.length;k+=2){const dx2=kept[k]-bx,dy2=kept[k+1]-by;sxx+=dx2*dx2;syy+=dy2*dy2;sxy+=dx2*dy2;}
+    sxx/=n2;syy/=n2;sxy/=n2;
+    const tr2=sxx+syy,disc=Math.sqrt(Math.max(0,tr2*tr2/4-(sxx*syy-sxy*sxy)));
+    const l1=tr2/2+disc,l2=Math.max(0.2,tr2/2-disc);
+    let ok=false;
+    if(l1/l2>2.2){                            // blob is elongated enough to trust
+      let ex=sxy,ey=l1-sxx;
+      if(Math.abs(ex)+Math.abs(ey)<1e-6){ex=l1-syy;ey=sxy;}
+      const el=Math.hypot(ex,ey)||1;ex/=el;ey/=el;
+      const proj=[];let tmax=0,tmin=0;
+      for(let k=0;k<kept.length;k+=2){
+        const t=(kept[k]-bx)*ex+(kept[k+1]-by)*ey;
+        proj.push(t);if(t>tmax)tmax=t;if(t<tmin)tmin=t;
+      }
+      let wPos=0,nPos=0,wNeg=0,nNeg=0;
+      for(let k=0;k<kept.length;k+=2){
+        const t=proj[k/2],perp=Math.abs((kept[k+1]-by)*ex-(kept[k]-bx)*ey);
+        if(t>tmax*0.5){wPos+=perp;nPos++;}
+        else if(t<tmin*0.5){wNeg+=perp;nNeg++;}
+      }
+      if(nPos>1&&nNeg>1){
+        const dir=(wPos/nPos)<(wNeg/nNeg)?1:-1;   // thinner end = tip
+        const ends=[];
+        for(let k=0;k<kept.length;k+=2)ends.push([proj[k/2]*dir,kept[k],kept[k+1]]);
+        ends.sort((a,c)=>c[0]-a[0]);
+        const top=ends.slice(0,3);
+        tipX=top.reduce((s2,p)=>s2+p[1],0)/3+dir*ex*1.5;
+        tipY=top.reduce((s2,p)=>s2+p[2],0)/3+dir*ey*1.5;
+        capConf=0.85;ok=true;                     // geometric orientation: decent, not certain
+      }
+    }
+    if(!ok)capConf=0.72;                          // shapeless blob → force review
   }
   if(cam.blob&&Math.hypot(tipX-cam.blob.x,tipY-cam.blob.y)<8)cam.stable++;else cam.stable=1;
   cam.blob={x:tipX,y:tipY};
@@ -707,7 +745,7 @@ function camTick(){
   const mmPerPx=168/rpx;
   const hit=detect((tipX-cx)*mmPerPx,(tipY-cy)*mmPerPx);
   hit.cam=true;
-  if(!oriented)hit.conf=Math.min(hit.conf,0.72);   // no flight seen → tip is a guess → force review
+  if(capConf!==null)hit.conf=Math.min(hit.conf,capConf);
   cam.snapCtx.drawImage(v,0,0,480,360);
   hit.snap=cam.snapCv.toDataURL("image/jpeg",0.7);
   hit.snapX=tipX/cam.W;hit.snapY=tipY/cam.H;
