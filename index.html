@@ -232,16 +232,16 @@
     </div>
     <div class="card" style="margin-top:10px">
       <div class="check"><span>Camera</span><span id="ck-cam" class="warn">requesting…</span></div>
-      <div class="check"><span>Board geometry fit</span><span id="ck-fit" class="warn">…</span></div>
-      <div class="check"><span>Throw line distance</span><span class="ok">2.37 m ✓</span></div>
-      <div class="check"><span>Lighting</span><span class="ok">Good ✓</span></div>
-      <div class="meter"><i id="calmeter" style="width:8%;background:var(--green);transition:width .5s"></i></div>
-      <div style="font-size:11px;color:var(--dim);margin-top:5px">Calibration confidence <b id="calpc" style="color:var(--green)">8%</b></div>
+      <div class="check"><span>Lighting</span><span id="ck-light" class="warn">…</span></div>
+      <div class="check"><span>Board detection (red/green rings)</span><span id="ck-fit" class="warn">…</span></div>
+      <div class="check"><span>Throw line distance</span><span style="color:var(--dim)">measure 2.37 m (manual)</span></div>
+      <div class="meter"><i id="calmeter" style="width:0%;background:var(--amber);transition:width .5s"></i></div>
+      <div style="font-size:11px;color:var(--dim);margin-top:5px">Calibration confidence <b id="calpc" style="color:var(--amber)">0%</b> — needs 70% to lock</div>
     </div>
-    <p class="simnote">Prototype vision is simulated — during play, tap the board where each dart lands and the AI ref makes the call.</p>
+    <p class="simnote">Calibration reads the live camera. Dart scoring is still simulated — during play, tap the board where each dart lands.</p>
     <div style="margin-top:auto;padding-top:14px">
       <button class="btn gold" id="startmatch" disabled>Start Match</button>
-      <button class="btn ghost" id="skipcal" style="margin-top:8px">Skip camera — use simulated board</button>
+      <button class="btn ghost" id="skipcal" style="margin-top:8px">Start without board lock (override)</button>
     </div>
   </section>
 
@@ -460,35 +460,87 @@ $("tosetup2").onclick=()=>{
   show("calib");startCalib();
 };
 
-/* ── calibration ── */
-let calibDone=false;
+/* ── calibration — real frame analysis on the live camera ── */
+let calStream=null,calTimer=null,calConf=0;
 function startCalib(){
-  if(calibDone)return;
-  navigator.mediaDevices&&navigator.mediaDevices.getUserMedia
-    ?navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}})
-      .then(s=>{$("cam").srcObject=s;$("ck-cam").textContent="Live ✓";$("ck-cam").className="ok";runCalib();})
-      .catch(()=>{camFallback();})
-    :camFallback();
+  if(calStream&&calStream.active){runCalibReal();return;}
+  if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia){
+    navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}})
+      .then(s=>{calStream=s;$("cam").srcObject=s;$("ck-cam").textContent="Live ✓";$("ck-cam").className="ok";runCalibReal();})
+      .catch(()=>{camFallback();});
+  }else camFallback();
 }
 function camFallback(){
   $("ck-cam").textContent="Unavailable — simulated";$("ck-cam").className="warn";
   $("cam").style.display="none";
   $("cam").parentElement.style.background=
     "radial-gradient(circle at 50% 50%, #7a1420 0 4%, #0f7a3d 4% 7%, #e9e0cd 7% 42%, #141414 42% 46%, #c8102e 46% 49%, #0d0d0d 49% 100%)";
-  runCalib();
+  setCalibUI(96,true,"Good ✓ (sim)");
+  $("calpc").textContent="96% (sim)";
+  $("startmatch").disabled=false;
 }
-function runCalib(){
-  let p=8;
-  const t=setInterval(()=>{
-    p=Math.min(96,p+Math.round(Math.random()*22));
-    $("calmeter").style.width=p+"%";$("calpc").textContent=p+"%";
-    if(p>=60){$("ck-fit").textContent="Locked ✓";$("ck-fit").className="ok";$("locktag").textContent="● Board locked";}
-    if(p>=96){clearInterval(t);calibDone=true;$("startmatch").disabled=false;}
-  },420);
+function setCalibUI(pc,locked,lightText){
+  const lt=$("ck-light");
+  lt.textContent=lightText;
+  lt.className=lightText.startsWith("Good")?"ok":"warn";
+  $("ck-fit").textContent=locked?"Locked ✓":"Searching…";
+  $("ck-fit").className=locked?"ok":"warn";
+  const tag=$("locktag");
+  tag.textContent=locked?"● Board locked":"● Searching for board…";
+  tag.style.borderColor=locked?"var(--green)":"var(--amber)";
+  tag.style.color=locked?"var(--green)":"var(--amber)";
+  tag.style.background=locked?"rgba(34,197,90,.16)":"rgba(245,166,35,.14)";
+  $("calmeter").style.width=pc+"%";
+  $("calmeter").style.background=pc>=70?"var(--green)":"var(--amber)";
+  $("calpc").textContent=pc+"%";
+  $("calpc").style.color=pc>=70?"var(--green)":"var(--amber)";
 }
-$("skipcal").onclick=()=>{calibDone=true;$("calmeter").style.width="96%";$("calpc").textContent="96% (sim)";
-  $("ck-fit").textContent="Locked ✓ (sim)";$("ck-fit").className="ok";$("startmatch").disabled=false;};
-$("startmatch").onclick=()=>{newMatch();show("live");renderLive();};
+function runCalibReal(){
+  clearInterval(calTimer);
+  const v=$("cam"),W=96,H=72;
+  const cv=document.createElement("canvas");cv.width=W;cv.height=H;
+  const cx2=cv.getContext("2d",{willReadFrequently:true});
+  calTimer=setInterval(()=>{
+    if(v.readyState<2)return;
+    cx2.drawImage(v,0,0,W,H);
+    const d=cx2.getImageData(0,0,W,H).data,n=W*H;
+    let sum=0,sum2=0,red=0,grn=0,rx=0,ry=0,gx=0,gy=0;
+    for(let i=0,px=0;i<d.length;i+=4,px++){
+      const r=d[i],g=d[i+1],b=d[i+2];
+      const l=0.299*r+0.587*g+0.114*b;
+      sum+=l;sum2+=l*l;
+      if(r>85&&r>1.45*g&&r>1.45*b){red++;rx+=px%W;ry+=(px/W)|0;}
+      else if(g>65&&g>1.25*r&&g>1.15*b){grn++;gx+=px%W;gy+=(px/W)|0;}
+    }
+    const mean=sum/n,sd=Math.sqrt(Math.max(0,sum2/n-mean*mean));
+    const light=Math.max(0,Math.min(1,(mean-25)/50));     // dark room → 0
+    const detail=Math.max(0,Math.min(1,sd/28));           // blank wall → low
+    // board signature: interleaved red+green ring pixels with coincident centroids
+    const fr=red/n,fg=grn/n;
+    let board=0;
+    if(fr>0.004&&fg>0.004&&fr<0.35&&fg<0.35){
+      const dx=rx/red-gx/grn,dy=ry/red-gy/grn;
+      const prox=Math.max(0,1-Math.hypot(dx,dy)/(W*0.35));
+      board=(0.5+0.5*prox)*Math.min(1,(fr+fg)/0.03);
+    }
+    calConf+=(100*(0.3*light+0.2*detail+0.5*board)-calConf)*0.35;
+    const pc=Math.round(calConf);
+    const lightText=mean<35?"Too dark ✕":mean<60?"Dim — add light":"Good ✓";
+    setCalibUI(pc,board>0.3&&pc>=70,lightText);
+    $("startmatch").disabled=pc<70;
+  },500);
+}
+function stopCalib(){
+  clearInterval(calTimer);calTimer=null;
+  if(calStream){calStream.getTracks().forEach(t=>t.stop());calStream=null;}
+}
+$("skipcal").onclick=()=>{
+  stopCalib();
+  $("calpc").textContent="override";
+  $("ck-fit").textContent="Overridden";$("ck-fit").className="warn";
+  $("startmatch").disabled=false;
+};
+$("startmatch").onclick=()=>{stopCalib();newMatch();show("live");renderLive();};
 
 /* ── live ── */
 const boardG=renderBoard($("board"));
